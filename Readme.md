@@ -1,0 +1,1 @@
+# Camada de Verificação Criptográfica para Integridade de Transações Bancárias Utilizando Blockchain Privada
