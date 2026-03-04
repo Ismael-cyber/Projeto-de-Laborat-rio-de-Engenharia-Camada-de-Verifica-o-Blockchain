@@ -25,8 +25,7 @@ O mercado financeiro busca:
 
 ## Descrição do Produto
 
-[!NOTE]
-API de verificação paralela de transações bancárias baseada em blockchain, que registra o hash criptográfico das transações em uma rede blockchain permissionada, garantindo integridade e rastreabilidade sem expor dados sensíveis.
+>API de verificação paralela de transações bancárias baseada em blockchain, que registra o hash criptográfico das transações em uma rede blockchain permissionada, >garantindo integridade e rastreabilidade sem expor dados sensíveis.
 
 ## Cliente/Usuários Finais/Envolvidos
 
