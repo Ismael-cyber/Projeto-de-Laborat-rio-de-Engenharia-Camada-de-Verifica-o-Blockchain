@@ -1,4 +1,4 @@
-class BancoDeDados:
+class BancoDeDadosS:
     def __init__(self):
         self.data = []
 
