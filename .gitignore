@@ -1,0 +1,15 @@
+cat > blockchain/.gitignore << 'EOF'
+# Binários do Fabric
+fabric-samples/bin/
+fabric-samples/builders/
+
+# Imagens e artefatos gerados
+fabric-samples/test-network/organizations/
+fabric-samples/test-network/channel-artifacts/
+fabric-samples/test-network/system-genesis-block/
+
+# Logs
+*.log
+EOF
+
+.gitignoreblockchain/chaincode-hash-verification/node_modules/

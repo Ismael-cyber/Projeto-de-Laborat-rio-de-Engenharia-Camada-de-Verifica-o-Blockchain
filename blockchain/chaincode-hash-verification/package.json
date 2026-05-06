@@ -1,0 +1,17 @@
+{
+  "name": "chaincode-hash-verification",
+  "version": "1.0.0",
+  "description": "Chaincode de verificação criptográfica de transações bancárias",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "fabric-contract-api": "^2.5.0",
+    "fabric-shim": "^2.5.0",
+    "uuid": "^9.0.0"
+  }
+}
