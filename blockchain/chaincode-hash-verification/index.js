@@ -1,6 +1,6 @@
 'use strict';
 
 const { HashVerification } = require('./lib/hashVerification');
+const Shim = require('fabric-shim');
 
-module.exports.HashVerification = HashVerification;
-module.exports.contracts = [HashVerification];
+Shim.start(new HashVerification());

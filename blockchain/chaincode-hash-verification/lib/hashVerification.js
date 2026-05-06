@@ -1,39 +1,64 @@
 'use strict';
 
-const { Contract } = require('fabric-contract-api');
-const { v4: uuidv4 } = require('uuid');
+const shim = require('fabric-shim');
 
-class HashVerification extends Contract {
+class HashVerification {
 
-    // ─── Inicialização do Ledger ───────────────────────────────────────────────
-    async InitLedger(ctx) {
-        console.log('Chaincode HashVerification inicializado com sucesso.');
+    async Init(stub) {
+        console.log('Chaincode HashVerification inicializado.');
+        return shim.success(Buffer.from('Ledger inicializado'));
+    }
+
+    async Invoke(stub) {
+        const { fcn, params } = stub.getFunctionAndParameters();
+        console.log(`Invocando: ${fcn}`, params);
+
+        const methods = {
+            RegisterHash:             () => this.RegisterHash(stub, params),
+            VerifyIntegrity:          () => this.VerifyIntegrity(stub, params),
+            QueryHash:                () => this.QueryHash(stub, params),
+            GetTransactionsByFintech: () => this.GetTransactionsByFintech(stub, params),
+            GetTransactionHistory:    () => this.GetTransactionHistory(stub, params),
+            InitLedger:               () => this.InitLedger(stub),
+        };
+
+        if (!methods[fcn]) {
+            return shim.error(Buffer.from(`Função '${fcn}' não encontrada.`));
+        }
+
+        try {
+            const result = await methods[fcn]();
+            return shim.success(Buffer.from(result));
+        } catch (err) {
+            console.error(`Erro em ${fcn}:`, err.message);
+            return shim.error(Buffer.from(err.message));
+        }
+    }
+
+    async InitLedger(stub) {
         return JSON.stringify({ status: 'OK', message: 'Ledger inicializado' });
     }
 
-    // ─── RF01/RF02/RF03: Registrar Hash de Transação ───────────────────────────
-    async RegisterHash(ctx, transactionId, hash, fintechId) {
-
-        // Validação de parâmetros
-        if (!transactionId || !hash || !fintechId) {
+    async RegisterHash(stub, params) {
+        if (params.length < 3) {
             throw new Error('INVALID_ARGS: transactionId, hash e fintechId são obrigatórios.');
         }
 
-        // Validação do formato SHA-256 (64 caracteres hexadecimais)
+        const [transactionId, hash, fintechId] = params;
+
         const sha256Regex = /^[a-fA-F0-9]{64}$/;
         if (!sha256Regex.test(hash)) {
-            throw new Error('INVALID_HASH: O hash deve ser um SHA-256 válido (64 caracteres hexadecimais).');
+            throw new Error('INVALID_HASH: O hash deve ser SHA-256 válido (64 caracteres hex).');
         }
 
-        // Verifica duplicidade
-        const existing = await ctx.stub.getState(transactionId);
+        const existing = await stub.getState(transactionId);
         if (existing && existing.length > 0) {
-            throw new Error(`ALREADY_EXISTS: Transação '${transactionId}' já foi registrada na blockchain.`);
+            throw new Error(`ALREADY_EXISTS: Transação '${transactionId}' já registrada.`);
         }
 
-        // Monta o registro — ZERO dados sensíveis do usuário
-        const verificationId = uuidv4();
-        const timestamp = new Date().toISOString();
+        // Usa txId da transação blockchain como verificationId — determinístico nos dois peers
+        const verificationId = stub.getTxID();
+        const timestamp = new Date(stub.getTxTimestamp().seconds.low * 1000).toISOString();
 
         const hashRecord = {
             transactionId,
@@ -44,10 +69,7 @@ class HashVerification extends Contract {
             docType: 'hashRecord'
         };
 
-        // Persiste no ledger
-        await ctx.stub.putState(transactionId, Buffer.from(JSON.stringify(hashRecord)));
-
-        console.log(`Hash registrado: transactionId=${transactionId}, fintechId=${fintechId}`);
+        await stub.putState(transactionId, Buffer.from(JSON.stringify(hashRecord)));
 
         return JSON.stringify({
             status: 'SUCCESS',
@@ -57,84 +79,64 @@ class HashVerification extends Contract {
         });
     }
 
-    // ─── RF04/RF05/RF06: Verificar Integridade de Transação ───────────────────
-    async VerifyIntegrity(ctx, transactionId, candidateHash) {
-
-        if (!transactionId || !candidateHash) {
+    async VerifyIntegrity(stub, params) {
+        if (params.length < 2) {
             throw new Error('INVALID_ARGS: transactionId e candidateHash são obrigatórios.');
         }
 
-        // Busca o registro no ledger
-        const recordBytes = await ctx.stub.getState(transactionId);
+        const [transactionId, candidateHash] = params;
+        const recordBytes = await stub.getState(transactionId);
+
         if (!recordBytes || recordBytes.length === 0) {
-            throw new Error(`NOT_FOUND: Transação '${transactionId}' não encontrada na blockchain.`);
+            throw new Error(`NOT_FOUND: Transação '${transactionId}' não encontrada.`);
         }
 
         const hashRecord = JSON.parse(recordBytes.toString());
-
-        // Comparação criptográfica
         const isIntact = hashRecord.hash === candidateHash;
 
-        const result = {
+        return JSON.stringify({
             transactionId,
             verificationId: hashRecord.verificationId,
             fintechId: hashRecord.fintechId,
             registeredAt: hashRecord.timestamp,
-            verifiedAt: new Date().toISOString(),
+            verifiedAt: new Date(stub.getTxTimestamp().seconds.low * 1000).toISOString(),
             status: isIntact ? 'INTEGRITY_OK' : 'INTEGRITY_FAILED',
             intact: isIntact
-        };
-
-        console.log(`Verificação: transactionId=${transactionId}, status=${result.status}`);
-
-        return JSON.stringify(result);
+        });
     }
 
-    // ─── RF04: Consultar Hash por ID ───────────────────────────────────────────
-    async QueryHash(ctx, transactionId) {
-
-        if (!transactionId) {
+    async QueryHash(stub, params) {
+        if (params.length < 1) {
             throw new Error('INVALID_ARGS: transactionId é obrigatório.');
         }
 
-        const recordBytes = await ctx.stub.getState(transactionId);
+        const recordBytes = await stub.getState(params[0]);
         if (!recordBytes || recordBytes.length === 0) {
-            throw new Error(`NOT_FOUND: Transação '${transactionId}' não encontrada na blockchain.`);
+            throw new Error(`NOT_FOUND: Transação '${params[0]}' não encontrada.`);
         }
 
         return recordBytes.toString();
     }
 
-    // ─── RF07: Consultar Histórico de Transações por Fintech ──────────────────
-    async GetTransactionsByFintech(ctx, fintechId, pageSize, bookmark) {
-
-        if (!fintechId) {
+    async GetTransactionsByFintech(stub, params) {
+        if (params.length < 1) {
             throw new Error('INVALID_ARGS: fintechId é obrigatório.');
         }
 
+        const [fintechId, pageSize, bookmark] = params;
         const pageSizeInt = parseInt(pageSize) || 10;
 
-        // Rich query CouchDB — filtra por fintechId
-        const query = {
-            selector: {
-                docType: 'hashRecord',
-                fintechId: fintechId
-            },
+        const query = JSON.stringify({
+            selector: { docType: 'hashRecord', fintechId },
             sort: [{ timestamp: 'desc' }]
-        };
+        });
 
-        const queryString = JSON.stringify(query);
-
-        // Paginação com bookmark
-        const { iterator, metadata } = await ctx.stub.getQueryResultWithPagination(
-            queryString,
-            pageSizeInt,
-            bookmark || ''
+        const { iterator, metadata } = await stub.getQueryResultWithPagination(
+            query, pageSizeInt, bookmark || ''
         );
 
         const results = [];
         let result = await iterator.next();
-
         while (!result.done) {
             const record = JSON.parse(result.value.value.toString());
             results.push({
@@ -145,7 +147,6 @@ class HashVerification extends Contract {
             });
             result = await iterator.next();
         }
-
         await iterator.close();
 
         return JSON.stringify({
@@ -156,32 +157,28 @@ class HashVerification extends Contract {
         });
     }
 
-    // ─── RF08: Histórico de alterações de uma transação (audit trail) ─────────
-    async GetTransactionHistory(ctx, transactionId) {
-
-        if (!transactionId) {
+    async GetTransactionHistory(stub, params) {
+        if (params.length < 1) {
             throw new Error('INVALID_ARGS: transactionId é obrigatório.');
         }
 
-        const iterator = await ctx.stub.getHistoryForKey(transactionId);
+        const iterator = await stub.getHistoryForKey(params[0]);
         const history = [];
 
         let result = await iterator.next();
         while (!result.done) {
-            const entry = {
+            history.push({
                 txId: result.value.txId,
                 timestamp: new Date(result.value.timestamp.seconds.low * 1000).toISOString(),
                 isDelete: result.value.isDelete,
                 value: result.value.value.toString()
-            };
-            history.push(entry);
+            });
             result = await iterator.next();
         }
-
         await iterator.close();
 
         if (history.length === 0) {
-            throw new Error(`NOT_FOUND: Nenhum histórico encontrado para '${transactionId}'.`);
+            throw new Error(`NOT_FOUND: Nenhum histórico para '${params[0]}'.`);
         }
 
         return JSON.stringify(history);
