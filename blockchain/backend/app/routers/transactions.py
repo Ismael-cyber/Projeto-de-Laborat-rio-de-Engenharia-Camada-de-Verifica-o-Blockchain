@@ -81,7 +81,7 @@ async def verify_transaction(
         raise HTTPException(status_code=500, detail=str(e))
 
 # ─── RF04: Consultar Hash por ID ─────────────────────────────────────────────
-@router.get("/{transaction_id}", )
+@router.get("/{transaction_id}")
 async def get_transaction(
     transaction_id: str,
     api_key: str = Depends(verify_api_key)

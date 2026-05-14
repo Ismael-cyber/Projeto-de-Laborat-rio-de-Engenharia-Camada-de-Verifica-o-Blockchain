@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: fastapi_backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Adiciona o diretório do Fabric ao PATH para que o Python ache o executável 'peer'
+      - PATH=/usr/local/bin:/usr/bin:/bin:/fabric-samples/bin
+    volumes:
+      - ./app:/app/app
+      - ./.env:/app/.env
+      - /home/ubuntu/fabric-samples:/fabric-samples
+    networks:
+      - fabric_test
+networks:
+  fabric_test:
+    external: true
