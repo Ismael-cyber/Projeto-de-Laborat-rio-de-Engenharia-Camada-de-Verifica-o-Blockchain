@@ -1,6 +1,34 @@
 'use strict';
 
 const shim = require('fabric-shim');
+const { v4: uuidv4 } = require('uuid');
+
+
+function validateSha256(hash) {
+    const SHA256_REGEX = /^[a-fA-F0-9]{64}$/;
+    if (!SHA256_REGEX.test(hash)) {
+        throw new Error('INVALID_HASH: O hash deve ser SHA-256 válido (64 caracteres hexadecimais).');
+    }
+}
+
+
+async function getHashRecord(stub, transactionId) {
+    const recordBytes = await stub.getState(transactionId);
+    if (!recordBytes || recordBytes.length === 0) {
+        throw new Error(`NOT_FOUND: Transação '${transactionId}' não encontrada.`);
+    }
+    return JSON.parse(recordBytes.toString());
+}
+
+
+function toISOTimestamp(fabricTimestamp) {
+    const seconds =
+        typeof fabricTimestamp.seconds === 'object'
+            ? fabricTimestamp.seconds.low   // Long (fabric-shim < 3)
+            : fabricTimestamp.seconds;      // number nativo
+    return new Date(seconds * 1000).toISOString();
+}
+
 
 class HashVerification {
 
@@ -39,6 +67,7 @@ class HashVerification {
         return JSON.stringify({ status: 'OK', message: 'Ledger inicializado' });
     }
 
+    
     async RegisterHash(stub, params) {
         if (params.length < 3) {
             throw new Error('INVALID_ARGS: transactionId, hash e fintechId são obrigatórios.');
@@ -46,62 +75,66 @@ class HashVerification {
 
         const [transactionId, hash, fintechId] = params;
 
-        const sha256Regex = /^[a-fA-F0-9]{64}$/;
-        if (!sha256Regex.test(hash)) {
-            throw new Error('INVALID_HASH: O hash deve ser SHA-256 válido (64 caracteres hex).');
-        }
+        validateSha256(hash);
 
         const existing = await stub.getState(transactionId);
         if (existing && existing.length > 0) {
             throw new Error(`ALREADY_EXISTS: Transação '${transactionId}' já registrada.`);
         }
 
-        // Usa txId da transação blockchain como verificationId — determinístico nos dois peers
-        const verificationId = stub.getTxID();
-        const timestamp = new Date(stub.getTxTimestamp().seconds.low * 1000).toISOString();
+        const verificationId = uuidv4();
+        const timestamp = toISOTimestamp(stub.getTxTimestamp());
 
+    
         const hashRecord = {
             transactionId,
             hash,
             fintechId,
             verificationId,
             timestamp,
-            docType: 'hashRecord'
+            docType: 'hashRecord',
         };
 
+      
         await stub.putState(transactionId, Buffer.from(JSON.stringify(hashRecord)));
 
+    
         return JSON.stringify({
             status: 'SUCCESS',
             verificationId,
             transactionId,
-            timestamp
+            timestamp,
         });
     }
 
+    
     async VerifyIntegrity(stub, params) {
         if (params.length < 2) {
             throw new Error('INVALID_ARGS: transactionId e candidateHash são obrigatórios.');
         }
 
         const [transactionId, candidateHash] = params;
-        const recordBytes = await stub.getState(transactionId);
 
-        if (!recordBytes || recordBytes.length === 0) {
-            throw new Error(`NOT_FOUND: Transação '${transactionId}' não encontrada.`);
-        }
+  
+        validateSha256(candidateHash);
 
-        const hashRecord = JSON.parse(recordBytes.toString());
-        const isIntact = hashRecord.hash === candidateHash;
+        const hashRecord = await getHashRecord(stub, transactionId);
 
+        
+        const intact = hashRecord.hash === candidateHash;
+
+        
         return JSON.stringify({
             transactionId,
-            verificationId: hashRecord.verificationId,
-            fintechId: hashRecord.fintechId,
-            registeredAt: hashRecord.timestamp,
-            verifiedAt: new Date(stub.getTxTimestamp().seconds.low * 1000).toISOString(),
-            status: isIntact ? 'INTEGRITY_OK' : 'INTEGRITY_FAILED',
-            intact: isIntact
+            verificationId:  hashRecord.verificationId,
+            fintechId:       hashRecord.fintechId,
+            registeredAt:    hashRecord.timestamp,
+            verifiedAt:      toISOTimestamp(stub.getTxTimestamp()),
+            status:          intact ? 'INTEGRITY_OK' : 'INTEGRITY_FAILED',
+            intact,
+            message: intact
+                ? 'O hash confere com o registro na blockchain.'
+                : 'O hash não corresponde ao registro.',
         });
     }
 
@@ -110,13 +143,13 @@ class HashVerification {
             throw new Error('INVALID_ARGS: transactionId é obrigatório.');
         }
 
-        const recordBytes = await stub.getState(params[0]);
-        if (!recordBytes || recordBytes.length === 0) {
-            throw new Error(`NOT_FOUND: Transação '${params[0]}' não encontrada.`);
-        }
+        const hashRecord = await getHashRecord(stub, params[0]);
 
-        return recordBytes.toString();
+        // Exclui docType da resposta — campo interno de indexação
+        const { docType, ...publicRecord } = hashRecord; // eslint-disable-line no-unused-vars
+        return JSON.stringify(publicRecord);
     }
+
 
     async GetTransactionsByFintech(stub, params) {
         if (params.length < 1) {
@@ -124,38 +157,42 @@ class HashVerification {
         }
 
         const [fintechId, pageSize, bookmark] = params;
-        const pageSizeInt = parseInt(pageSize) || 10;
+        const pageSizeInt = parseInt(pageSize, 10) || 10;
 
         const query = JSON.stringify({
             selector: { docType: 'hashRecord', fintechId },
-            sort: [{ timestamp: 'desc' }]
+            sort: [{ timestamp: 'desc' }],
         });
 
         const { iterator, metadata } = await stub.getQueryResultWithPagination(
             query, pageSizeInt, bookmark || ''
         );
 
-        const results = [];
+        // Coleta resultados paginados
+        const records = [];
         let result = await iterator.next();
         while (!result.done) {
             const record = JSON.parse(result.value.value.toString());
-            results.push({
-                transactionId: record.transactionId,
+            records.push({
+                transactionId:  record.transactionId,
                 verificationId: record.verificationId,
-                timestamp: record.timestamp,
-                status: 'REGISTERED'
+                timestamp:      record.timestamp,
+                status:         'REGISTERED',
             });
             result = await iterator.next();
         }
         await iterator.close();
 
+        // T-018: retorno estruturado com paginação completa
         return JSON.stringify({
-            records: results,
-            totalCount: results.length,
-            bookmark: metadata.bookmark,
-            hasMore: metadata.bookmark !== ''
+            records,
+            totalCount:  records.length,
+            pageSize:    pageSizeInt,
+            bookmark:    metadata.bookmark,
+            hasMore:     metadata.bookmark !== '',
         });
     }
+
 
     async GetTransactionHistory(stub, params) {
         if (params.length < 1) {
@@ -168,10 +205,10 @@ class HashVerification {
         let result = await iterator.next();
         while (!result.done) {
             history.push({
-                txId: result.value.txId,
-                timestamp: new Date(result.value.timestamp.seconds.low * 1000).toISOString(),
-                isDelete: result.value.isDelete,
-                value: result.value.value.toString()
+                txId:      result.value.txId,
+                timestamp: toISOTimestamp(result.value.timestamp),
+                isDelete:  result.value.isDelete,
+                value:     result.value.value.toString(),
             });
             result = await iterator.next();
         }
